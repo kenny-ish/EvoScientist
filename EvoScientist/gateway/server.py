@@ -432,6 +432,27 @@ class LangGraphServerThreadStore(ThreadStore):
         return cloned_thread_id
 
 
+def _root_run_failure_message(event: Mapping[str, Any]) -> str | None:
+    """Return the error from a failed root run lifecycle event."""
+    if event.get("method") != "lifecycle" or _event_namespace(event):
+        return None
+    params = _as_raw_map(event.get("params"))
+    data = _as_raw_map(params.get("data")) if params is not None else None
+    if data is None or data.get("event") != "failed":
+        return None
+
+    error = data.get("error")
+    if isinstance(error, Mapping):
+        message = error.get("message")
+    else:
+        message = error
+    return (
+        message
+        if isinstance(message, str) and message
+        else "LangGraph server run failed"
+    )
+
+
 @dataclass(slots=True)
 class _ServerSubagentTracker:
     """Infer subagent start/end events from LangGraph server namespaces."""
@@ -1173,6 +1194,9 @@ class LangGraphServerGateway:
                     ):
                         yield selection_event
                     event_map: dict[str, Any] = dict(raw_event)
+                    failure_message = _root_run_failure_message(event_map)
+                    if failure_message is not None:
+                        raise RuntimeError(failure_message)
                     for subagent_event in tracker.process(event_map):
                         yield subagent_event
                     for normalized in await processor.process(event_map):

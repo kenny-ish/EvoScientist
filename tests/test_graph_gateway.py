@@ -2354,6 +2354,54 @@ async def test_langgraph_server_gateway_clears_stuck_state_after_run_failure():
     ]
 
 
+async def test_langgraph_server_gateway_surfaces_root_run_failure():
+    stream = FakeLangGraphThreadStream(
+        "abc12345",
+        events=[
+            {
+                "method": "lifecycle",
+                "params": {
+                    "namespace": [],
+                    "data": {"event": "failed", "error": "boom"},
+                },
+            },
+        ],
+    )
+    threads = FakeLangGraphThreadsClient(
+        threads=[],
+        states={"abc12345": {"values": {}, "next": ("boom",)}},
+        streams={"abc12345": stream},
+    )
+    client = FakeLangGraphClient(threads)
+
+    class _FakeRunsClient:
+        async def list(self, thread_id: str, *, limit: int, offset: int, status: str):
+            return []
+
+        async def cancel_many(self, *, thread_id: str, run_ids):
+            pass
+
+    client.runs = _FakeRunsClient()
+    gateway = LangGraphServerGateway(
+        LangGraphServerThreadStore(client=client),
+    )
+    events = []
+
+    async def _consume():
+        async for event in gateway.stream_events(
+            RunRequest(message="hi", thread_id="abc12345")
+        ):
+            events.append(event)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await _consume()
+
+    assert events == [{"type": "error", "message": "boom"}]
+    assert threads.state_updates == [
+        ("abc12345", None, "__end__"),
+    ]
+
+
 @pytest.mark.parametrize(
     "failure",
     [
